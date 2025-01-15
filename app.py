@@ -389,3 +389,82 @@ async def extract_reviews_traditional(page) -> List[Dict]:
             cleaned_reviews.append(review)
     
     return cleaned_reviews
+async def combine_extraction_methods(page) -> List[Dict]:
+    """Combine traditional and LLM-based extraction methods."""
+    all_reviews = []
+    seen_content = set()
+    
+    # First, try traditional extraction
+    traditional_reviews = await extract_reviews_traditional(page)
+    for review in traditional_reviews:
+        if review['body'] not in seen_content:
+            seen_content.add(review['body'])
+            all_reviews.append(review)
+    
+    # Then try LLM-based extraction
+    try:
+        html_content = await page.content()
+        container_selectors, content_selectors, rating_selectors = await get_dynamic_selectors(html_content)
+        
+        llm_reviews = await page.evaluate("""(selectors) => {
+            function cleanText(text) {
+                if (!text) return '';
+                return text.replace(/\\s+/g, ' ')
+                          .replace(/\\r?\\n/g, ' ')
+                          .trim()
+                          .split(/(?:read more|show more|see more)/i)[0];
+            }
+            
+            function extractRating(element, ratingSelectors) {
+                for (const selector of ratingSelectors) {
+                    const ratingEl = element.querySelector(selector);
+                    if (ratingEl) {
+                        const ratingText = ratingEl.textContent;
+                        const ratingMatch = ratingText.match(/([1-5]([.,]\\d)?)/);
+                        if (ratingMatch) {
+                            return parseFloat(ratingMatch[1]);
+                        }
+                    }
+                }
+                return null;
+            }
+            
+            const reviews = [];
+            
+            for (const containerSelector of selectors.containers) {
+                const containers = document.querySelectorAll(containerSelector);
+                containers.forEach(container => {
+                    let content = null;
+                    
+                    for (const contentSelector of selectors.content) {
+                        const contentEl = container.querySelector(contentSelector);
+                        if (contentEl) {
+                            content = cleanText(contentEl.textContent);
+                            if (content) break;
+                        }
+                    }
+                    
+                    if (content && content.split(/\\s+/).length >= 3) {
+                        const rating = extractRating(container, selectors.ratings);
+                        reviews.push({
+                            title: "Review",
+                            body: content,
+                            rating: rating,
+                            reviewer: "Anonymous"
+                        });
+                    }
+                });
+            }
+            
+            return reviews;
+        }""", {"containers": container_selectors, "content": content_selectors, "ratings": rating_selectors})
+        
+        for review in llm_reviews:
+            if review['body'] not in seen_content:
+                seen_content.add(review['body'])
+                all_reviews.append(review)
+                
+    except Exception as e:
+        logger.error(f"LLM extraction encountered an error: {str(e)}")
+    
+    return all_reviews
