@@ -107,3 +107,55 @@ async def detect_pagination_type(page) -> str:
                 continue
     
     return 'unknown'
+async def get_dynamic_selectors(html_content: str) -> Tuple[List[str], List[str], List[str]]:
+    """Use LLM to identify dynamic CSS selectors for reviews."""
+    prompt = f"""Analyze this HTML and identify CSS selectors for review elements.
+    Focus on finding:
+    1. Review container selectors that contain individual reviews
+    2. Review content/body selectors
+    3. Rating/stars selectors
+    
+    Return only the selectors in this exact format:
+    CONTAINERS: [selector1, selector2, ...]
+    CONTENT: [selector1, selector2, ...]
+    RATINGS: [selector1, selector2, ...]
+    """
+    
+    try:
+        response = openai.ChatCompletion.create(
+            model="gpt-3.5-turbo",
+            messages=[
+                {"role": "system", "content": "You are a web scraping expert that identifies CSS selectors for reviews."},
+                {"role": "user", "content": prompt},
+                {"role": "user", "content": html_content[:15000]}
+            ],
+            temperature=0.1
+        )
+        
+        result = response['choices'][0]['message']['content']
+        
+        # Parse the response
+        containers = []
+        content = []
+        ratings = []
+        
+        current_list = None
+        for line in result.split('\n'):
+            if 'CONTAINERS:' in line:
+                current_list = containers
+                line = line.split('CONTAINERS:')[1]
+            elif 'CONTENT:' in line:
+                current_list = content
+                line = line.split('CONTENT:')[1]
+            elif 'RATINGS:' in line:
+                current_list = ratings
+                line = line.split('RATINGS:')[1]
+                
+            if current_list is not None:
+                selectors = re.findall(r'[\'"]([^\'"]+)[\'"]', line)
+                current_list.extend(selectors)
+        
+        return containers, content, ratings
+    except Exception as e:
+        logger.error(f"Error getting dynamic selectors: {str(e)}")
+        return [], [], []
