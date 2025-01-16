@@ -615,3 +615,100 @@ async def combine_extraction_methods(page) -> List[Dict]:
         logger.error(f"LLM extraction encountered an error: {str(e)}")
     
     return all_reviews
+async def scrape_reviews(url: str, max_reviews: int = 500) -> Dict:
+    """Main review scraping function."""
+    async with async_playwright() as p:
+        browser = await p.chromium.launch(headless=True)
+        context = await browser.new_context(
+            viewport={'width': 1920, 'height': 1080},
+            user_agent='Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+        )
+        page = await context.new_page()
+        all_reviews = []
+        successful_pages = 0
+        
+        try:
+            # Initial page load
+            logger.info("Loading page...")
+            await page.goto(url, wait_until='domcontentloaded')
+            await page.wait_for_timeout(2000)
+            
+            page_num = 1
+            
+            while len(all_reviews) < max_reviews and page_num <= 50:
+                logger.info(f"Scraping page {page_num}...")
+                
+                # Handle dynamic loading
+                await handle_dynamic_loading(page)
+                
+                # Extract reviews using both methods
+                new_reviews = await combine_extraction_methods(page)
+                
+                if new_reviews:
+                    initial_review_count = len(all_reviews)
+                    
+                    existing_contents = set(r['body'] for r in all_reviews)
+                    unique_reviews = [r for r in new_reviews if r['body'] not in existing_contents]
+                    all_reviews.extend(unique_reviews)
+                    
+                    if len(all_reviews) > initial_review_count:
+                        successful_pages += 1
+                        logger.info(f"Found {len(unique_reviews)} new unique reviews on page {page_num}")
+                    else:
+                        logger.info("No new unique reviews found. Stopping the scraping process.")
+                        break
+                else:
+                    logger.info("No reviews found on current page. Stopping the scraping process.")
+                    break
+                
+                # Handle pagination
+                if len(all_reviews) < max_reviews:
+                    has_next = await handle_pagination(page, page_num)
+                    if not has_next:
+                        logger.warning("No more pages available")
+                        break
+                    page_num += 1
+                else:
+                    break
+            
+            # Create final result
+            final_result = {
+                "reviews": all_reviews,
+                "reviews_count": len(all_reviews),
+                "pages_with_unique_reviews": successful_pages,
+                "url": url,
+                "scrape_date": time.strftime("%Y-%m-%d %H:%M:%S")
+            }
+            
+            return final_result
+            
+        finally:
+            await context.close()
+            await browser.close()
+
+@app.get("/api/reviews", response_model=ReviewResponse)
+async def get_reviews(
+    page: str = Query(..., description="URL encoded page URL to scrape reviews from"),
+    max_reviews: int = Query(500, ge=10, le=1000, description="Maximum number of reviews to scrape")
+):
+    """
+    Scrape reviews from a given URL.
+    
+    Parameters:
+    - page: URL encoded page URL to scrape reviews from
+    - max_reviews: Maximum number of reviews to scrape (default: 500, min: 10, max: 1000)
+    
+    Returns:
+    - JSON object containing reviews and metadata
+    """
+    try:
+        decoded_url = unquote(page)
+        result = await scrape_reviews(decoded_url, max_reviews)
+        return ReviewResponse(**result)
+    except Exception as e:
+        logger.error(f"Error scraping reviews: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Error scraping reviews: {str(e)}")
+
+if __name__ == "__main__":
+    import uvicorn
+    uvicorn.run("main:app", host="0.0.0.0", port=8000, reload=True)
