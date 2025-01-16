@@ -107,6 +107,153 @@ async def detect_pagination_type(page) -> str:
                 continue
     
     return 'unknown'
+async def handle_dynamic_loading(page):
+    """Handle dynamic content loading through scrolling and button clicks."""
+    try:
+        # Scroll to bottom in increments
+        current_height = 0
+        for _ in range(3):
+            try:
+                await page.evaluate('''() => {
+                    window.scrollTo({
+                        top: document.body.scrollHeight,
+                        behavior: 'smooth'
+                    });
+                }''')
+                # Increased wait time after scroll
+                await page.wait_for_timeout(3000)
+                
+                new_height = await page.evaluate('document.body.scrollHeight')
+                if new_height == current_height:
+                    # Add extra wait when height doesn't change
+                    await page.wait_for_timeout(2000)
+                    break
+                current_height = new_height
+            except Exception as scroll_error:
+                logger.error(f"Scroll error: {str(scroll_error)}")
+                # Add wait after error before retrying
+                await page.wait_for_timeout(2000)
+                break
+        
+        # Add wait before trying to click buttons
+        await page.wait_for_timeout(2000)
+        
+        # Try clicking "Load More" buttons
+        load_more_selectors = [
+            'button:text-is("Show More")',
+            'button:text-is("Load More")',
+            'a:text-is("Show More")',
+            'a:text-is("Load More")',
+            '[class*="load-more"]',
+            '[class*="show-more"]'
+        ]
+        
+        for selector in load_more_selectors:
+            try:
+                while True:
+                    button = await page.query_selector(selector)
+                    if not button or not await button.is_visible():
+                        break
+                    await button.click()
+                    # Increased wait time after clicking load more
+                    await page.wait_for_timeout(3000)
+            except Exception as e:
+                logger.error(f"Error clicking load more button: {str(e)}")
+                continue
+                
+    except Exception as e:
+        logger.error(f"Error in dynamic loading: {str(e)}")
+
+async def handle_pagination(page, current_page: int) -> bool:
+    """Handle different types of pagination including numbered buttons and arrows."""
+    try:
+        # First try direct numbered pagination
+        selectors = [
+            f'[class*="pagination"] [aria-label="Page {current_page + 1}"]',
+            f'[class*="pagination"] a:text("{current_page + 1}")',
+            f'button:text("{current_page + 1}")',
+            f'a[href*="page={current_page + 1}"]',
+            '[class*="pagination"] [aria-label*="next"]',
+            '[class*="pagination"] button:has-text(">")',
+            '[class*="pagination"] a:has-text(">")',
+            '.next a',
+            'a[rel="next"]',
+            '.pagination__next',
+            '.pagination__item--next',
+            '[class*="pagination"] button:not([disabled])',
+            '[class*="pagination"] a:not([class*="disabled"])',
+            'li.next a'
+        ]
+
+        # Try to find and click pagination elements
+        for selector in selectors:
+            try:
+                try:
+                    await page.wait_for_selector(selector, timeout=5000)
+                except:
+                    continue
+
+                element = await page.query_selector(selector)
+                if element:
+                    
+                    if await element.is_visible():
+                        before_url = page.url
+                        before_html = await page.content()
+                        
+                        await element.scroll_into_view_if_needed()
+                        await page.wait_for_timeout(1000)
+                        
+                        try:
+                            await element.click(timeout=5000)
+                            
+                        except:
+                            await page.evaluate('(element) => element.click()', element)
+                            
+                        
+                        try:
+                            await page.wait_for_load_state('networkidle', timeout=5000)
+                        except:
+                            await page.wait_for_timeout(2000)
+                        
+                        after_url = page.url
+                        after_html = await page.content()
+                        
+                        if before_url != after_url or before_html != after_html:
+                            logger.info(f"Successfully navigated to next page: {after_url}")
+                            return True
+                
+            except Exception as e:
+                logger.error(f"Error with selector {selector}: {str(e)}")
+                continue
+        
+        # If clicking didn't work, try URL modification
+        try:
+            current_url = page.url
+            logger.info("Trying URL modification...")
+            
+            if 'page=' in current_url:
+                next_url = re.sub(r'page=\d+', f'page={current_page + 1}', current_url)
+            else:
+                separator = '&' if '?' in current_url else '?'
+                next_url = f"{current_url}{separator}page={current_page + 1}"
+            
+            logger.info(f"Attempting to navigate to: {next_url}")
+            
+            response = await page.goto(next_url)
+            if response and response.ok():
+                await page.wait_for_timeout(2000)
+                return True
+        
+        except Exception as e:
+            logger.error(f"Error during URL modification: {str(e)}")
+        
+        logger.warning("No more pages found")
+        return False
+        
+    except Exception as e:
+        logger.error(f"Error in pagination: {str(e)}")
+        return False
+    
 async def get_dynamic_selectors(html_content: str) -> Tuple[List[str], List[str], List[str]]:
     """Use LLM to identify dynamic CSS selectors for reviews."""
     prompt = f"""Analyze this HTML and identify CSS selectors for review elements.
