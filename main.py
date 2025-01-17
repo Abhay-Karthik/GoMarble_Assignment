@@ -1,7 +1,12 @@
 from fastapi import FastAPI, HTTPException, Query
 from fastapi.responses import JSONResponse
+from fastapi.staticfiles import StaticFiles
+from fastapi.templating import Jinja2Templates
+from fastapi.responses import HTMLResponse
+from fastapi import Request
 from fastapi.middleware.cors import CORSMiddleware
 import asyncio
+from urllib.parse import unquote
 from playwright.async_api import async_playwright
 import json
 import pandas as pd
@@ -14,7 +19,6 @@ import logging
 import os
 from dotenv import load_dotenv
 from pydantic import BaseModel
-from urllib.parse import unquote
 
 # Load environment variables
 load_dotenv()
@@ -28,10 +32,21 @@ logger = logging.getLogger(__name__)
 
 # Initialize FastAPI app
 app = FastAPI(
-    title="Review Scraper API",
-    description="API for scraping reviews from websites with LLM-enhanced extraction",
+    title="AI Review Scraper",
+    description="API for scraping reviews from websites",
     version="1.0.0"
 )
+
+# Mount static files
+app.mount("/static", StaticFiles(directory="static"), name="static")
+
+# Initialize templates
+templates = Jinja2Templates(directory="templates")
+
+# Root route for serving the frontend
+@app.get("/", response_class=HTMLResponse)
+async def read_root(request: Request):
+    return templates.TemplateResponse("index.html", {"request": request})
 
 # Add CORS middleware
 app.add_middleware(
@@ -47,24 +62,24 @@ OPENAI_API_KEY = os.getenv('OPENAI_API_KEY')
 if not OPENAI_API_KEY:
     raise EnvironmentError("OpenAI API key not found in environment variables")
 
-# Set OpenAI API key
 openai.api_key = OPENAI_API_KEY
 
 # Response Models
 class Review(BaseModel):
     title: str
-    body: str
-    rating: Optional[float]
-    reviewer: str
+    text: str
+    stars: Optional[float]
+    user_name: str
 
 class ReviewResponse(BaseModel):
     reviews_count: int
-    reviews: List[Review]
+    review_list: List[Review]
     pages_with_unique_reviews: int
     url: str
     scrape_date: str
-async def detect_pagination_type(page) -> str:
-    """Detect the type of pagination used on the page."""
+
+async def check_page_type(page) -> str:
+    """Check the type of pagination used on the page."""
     patterns = {
         'infinite_scroll': [
             'window.addEventListener("scroll"',
@@ -103,14 +118,14 @@ async def detect_pagination_type(page) -> str:
                     if selector in content.lower():
                         return ptype
             except Exception as e:
-                logger.error(f"Error detecting pagination type: {str(e)}")
+                logger.error(f"Error checking page type: {str(e)}")
                 continue
     
     return 'unknown'
-async def handle_dynamic_loading(page):
-    """Handle dynamic content loading through scrolling and button clicks."""
+
+async def scroll_and_load(page):
+    """Handle dynamic content loading through scrolling and buttons."""
     try:
-        # Scroll to bottom in increments
         current_height = 0
         for _ in range(3):
             try:
@@ -120,22 +135,18 @@ async def handle_dynamic_loading(page):
                         behavior: 'smooth'
                     });
                 }''')
-                # Increased wait time after scroll
                 await page.wait_for_timeout(3000)
                 
                 new_height = await page.evaluate('document.body.scrollHeight')
                 if new_height == current_height:
-                    # Add extra wait when height doesn't change
                     await page.wait_for_timeout(2000)
                     break
                 current_height = new_height
             except Exception as scroll_error:
                 logger.error(f"Scroll error: {str(scroll_error)}")
-                # Add wait after error before retrying
                 await page.wait_for_timeout(2000)
                 break
         
-        # Add wait before trying to click buttons
         await page.wait_for_timeout(2000)
         
         # Try clicking "Load More" buttons
@@ -151,28 +162,25 @@ async def handle_dynamic_loading(page):
         for selector in load_more_selectors:
             try:
                 while True:
-                    button = await page.query_selector(selector)
-                    if not button or not await button.is_visible():
+                    more_btn = await page.query_selector(selector)
+                    if not more_btn or not await more_btn.is_visible():
                         break
-                    await button.click()
-                    # Increased wait time after clicking load more
+                    await more_btn.click()
                     await page.wait_for_timeout(3000)
             except Exception as e:
-                logger.error(f"Error clicking load more button: {str(e)}")
                 continue
                 
     except Exception as e:
         logger.error(f"Error in dynamic loading: {str(e)}")
 
-async def handle_pagination(page, current_page: int) -> bool:
-    """Handle different types of pagination including numbered buttons and arrows."""
+async def handle_pagination(page, curr_page: int) -> bool:
+    """Handle different types of pagination."""
     try:
-        # First try direct numbered pagination
         selectors = [
-            f'[class*="pagination"] [aria-label="Page {current_page + 1}"]',
-            f'[class*="pagination"] a:text("{current_page + 1}")',
-            f'button:text("{current_page + 1}")',
-            f'a[href*="page={current_page + 1}"]',
+            f'[class*="pagination"] [aria-label="Page {curr_page + 1}"]',
+            f'[class*="pagination"] a:text("{curr_page + 1}")',
+            f'button:text("{curr_page + 1}")',
+            f'a[href*="page={curr_page + 1}"]',
             '[class*="pagination"] [aria-label*="next"]',
             '[class*="pagination"] button:has-text(">")',
             '[class*="pagination"] a:has-text(">")',
@@ -185,7 +193,6 @@ async def handle_pagination(page, current_page: int) -> bool:
             'li.next a'
         ]
 
-        # Try to find and click pagination elements
         for selector in selectors:
             try:
                 try:
@@ -193,51 +200,40 @@ async def handle_pagination(page, current_page: int) -> bool:
                 except:
                     continue
 
-                element = await page.query_selector(selector)
-                if element:
+                next_btn = await page.query_selector(selector)
+                if next_btn and await next_btn.is_visible():
+                    before_url = page.url
+                    before_html = await page.content()
                     
-                    if await element.is_visible():
-                        before_url = page.url
-                        before_html = await page.content()
-                        
-                        await element.scroll_into_view_if_needed()
-                        await page.wait_for_timeout(1000)
-                        
-                        try:
-                            await element.click(timeout=5000)
-                            
-                        except:
-                            await page.evaluate('(element) => element.click()', element)
-                            
-                        
-                        try:
-                            await page.wait_for_load_state('networkidle', timeout=5000)
-                        except:
-                            await page.wait_for_timeout(2000)
-                        
-                        after_url = page.url
-                        after_html = await page.content()
-                        
-                        if before_url != after_url or before_html != after_html:
-                            logger.info(f"Successfully navigated to next page: {after_url}")
-                            return True
+                    await next_btn.scroll_into_view_if_needed()
+                    await page.wait_for_timeout(1000)
+                    
+                    try:
+                        await next_btn.click(timeout=5000)
+                    except:
+                        await page.evaluate('(element) => element.click()', next_btn)
+                    
+                    try:
+                        await page.wait_for_load_state('networkidle', timeout=5000)
+                    except:
+                        await page.wait_for_timeout(2000)
+                    
+                    after_url = page.url
+                    after_html = await page.content()
+                    
+                    if before_url != after_url or before_html != after_html:
+                        return True
                 
             except Exception as e:
-                logger.error(f"Error with selector {selector}: {str(e)}")
                 continue
         
-        # If clicking didn't work, try URL modification
         try:
-            current_url = page.url
-            logger.info("Trying URL modification...")
-            
+            current_url = page.url            
             if 'page=' in current_url:
-                next_url = re.sub(r'page=\d+', f'page={current_page + 1}', current_url)
+                next_url = re.sub(r'page=\d+', f'page={curr_page + 1}', current_url)
             else:
                 separator = '&' if '?' in current_url else '?'
-                next_url = f"{current_url}{separator}page={current_page + 1}"
-            
-            logger.info(f"Attempting to navigate to: {next_url}")
+                next_url = f"{current_url}{separator}page={curr_page + 1}"
             
             response = await page.goto(next_url)
             if response and response.ok():
@@ -245,69 +241,15 @@ async def handle_pagination(page, current_page: int) -> bool:
                 return True
         
         except Exception as e:
-            logger.error(f"Error during URL modification: {str(e)}")
+            pass
         
-        logger.warning("No more pages found")
         return False
         
     except Exception as e:
-        logger.error(f"Error in pagination: {str(e)}")
         return False
-    
-async def get_dynamic_selectors(html_content: str) -> Tuple[List[str], List[str], List[str]]:
-    """Use LLM to identify dynamic CSS selectors for reviews."""
-    prompt = f"""Analyze this HTML and identify CSS selectors for review elements.
-    Focus on finding:
-    1. Review container selectors that contain individual reviews
-    2. Review content/body selectors
-    3. Rating/stars selectors
-    
-    Return only the selectors in this exact format:
-    CONTAINERS: [selector1, selector2, ...]
-    CONTENT: [selector1, selector2, ...]
-    RATINGS: [selector1, selector2, ...]
-    """
-    
-    try:
-        response = openai.ChatCompletion.create(
-            model="gpt-3.5-turbo",
-            messages=[
-                {"role": "system", "content": "You are a web scraping expert that identifies CSS selectors for reviews."},
-                {"role": "user", "content": prompt},
-                {"role": "user", "content": html_content[:15000]}
-            ],
-            temperature=0.1
-        )
-        
-        result = response['choices'][0]['message']['content']
-        
-        # Parse the response
-        containers = []
-        content = []
-        ratings = []
-        
-        current_list = None
-        for line in result.split('\n'):
-            if 'CONTAINERS:' in line:
-                current_list = containers
-                line = line.split('CONTAINERS:')[1]
-            elif 'CONTENT:' in line:
-                current_list = content
-                line = line.split('CONTENT:')[1]
-            elif 'RATINGS:' in line:
-                current_list = ratings
-                line = line.split('RATINGS:')[1]
-                
-            if current_list is not None:
-                selectors = re.findall(r'[\'"]([^\'"]+)[\'"]', line)
-                current_list.extend(selectors)
-        
-        return containers, content, ratings
-    except Exception as e:
-        logger.error(f"Error getting dynamic selectors: {str(e)}")
-        return [], [], []
-async def extract_reviews_traditional(page) -> List[Dict]:
-    """Extract reviews using traditional selectors."""
+
+async def grab_reviews(page) -> List[Dict]:
+    """Get reviews from the current page."""
     reviews = await page.evaluate("""() => {
         function cleanText(text) {
             if (!text) return '';
@@ -335,17 +277,17 @@ async def extract_reviews_traditional(page) -> List[Dict]:
             return cleanedText.trim();
         }
         
-        function extractRating(element) {
+        function getStars(element) {
             try {
-                let rating = null;
+                let stars = null;
                 
-                const stars = element.querySelectorAll(
+                const star_elems = element.querySelectorAll(
                     '[class*="star-full"], [class*="star"][class*="filled"], .spr-icon-star, [class*="yotpo-star-full"], [class*="rating"] .full'
                 );
-                if (stars.length > 0) {
-                    rating = stars.length;
-                    if (rating >= 0 && rating <= 5) {
-                        return rating;
+                if (star_elems.length > 0) {
+                    stars = star_elems.length;
+                    if (stars >= 0 && stars <= 5) {
+                        return stars;
                     }
                 }
 
@@ -353,13 +295,14 @@ async def extract_reviews_traditional(page) -> List[Dict]:
                 for (const attr of dataAttrs) {
                     const value = element.getAttribute(attr);
                     if (value && !isNaN(value)) {
-                        rating = parseFloat(value);
-                        if (rating >= 0 && rating <= 5) {
-                            return rating;
+                        stars = parseFloat(value);
+                        if (stars >= 0 && stars <= 5) {
+                            return stars;
                         }
                     }
                 }
-                                  const fullText = element.textContent || '';
+                
+                const fullText = element.textContent || '';
                 const patterns = [
                     /([1-5]([.,]\\d)?)\s*(?:star|\/\s*5|$)/i,
                     /Rated\s+([1-5]([.,]\\d)?)/i,
@@ -371,24 +314,23 @@ async def extract_reviews_traditional(page) -> List[Dict]:
                     const match = fullText.match(pattern);
                     if (match) {
                         if (match[1].includes('★') || match[1].includes('⭐')) {
-                            rating = match[1].length;
+                            stars = match[1].length;
                         } else {
-                            rating = parseFloat(match[1].replace(',', '.'));
+                            stars = parseFloat(match[1].replace(',', '.'));
                         }
-                        if (rating >= 0 && rating <= 5) {
-                            return rating;
+                        if (stars >= 0 && stars <= 5) {
+                            return stars;
                         }
                     }
                 }
 
                 return null;
             } catch (error) {
-                console.error('Error extracting rating:', error);
                 return null;
             }
         }
 
-        function isValidReview(text) {
+        function isValid(text) {
             if (!text) return false;
             
             const invalidPatterns = [
@@ -411,44 +353,14 @@ async def extract_reviews_traditional(page) -> List[Dict]:
             return text.trim().split(/\\s+/).length >= 3;
         }
 
-        const reviewSelectors = [
-            '.review-item',
-            '.review-content',
-            '[data-review-id]',
-            '[class*="review-container"]',
-            '[class*="review_container"]',
-            '.jdgm-rev',
-            '.yotpo-review',
-            '.spr-review',
-            '.stamped-review',
-            '.loox-review',
-            '.reviewsio-review',
-            '.okendo-review',
-            '.trustpilot-review',
-            '[data-reviews-target]',
-            '[class*="ReviewCard"]',
-            '[class*="review-card"]',
-            '[data-review]',
-            '.okeReviews-review-item'
-        ].join(',');
+        const review_boxes = document.querySelectorAll(
+            '.review-item, .review-content, [data-review-id], [class*="review-container"], [class*="review_container"], .jdgm-rev, .yotpo-review, .spr-review, .stamped-review, .loox-review, .reviewsio-review, .okendo-review, .trustpilot-review, [data-reviews-target], [class*="ReviewCard"], [class*="review-card"], [data-review], .okeReviews-review-item'
+        );
 
-        let reviewElements = Array.from(document.querySelectorAll(reviewSelectors));
-        
-        if (reviewElements.length === 0) {
-            reviewElements = Array.from(document.querySelectorAll('*')).filter(el => {
-                const text = (el.textContent || '').toLowerCase();
-                const classes = (el.className || '').toLowerCase();
-                const id = (el.id || '').toLowerCase();
-                return (text.includes('review') || classes.includes('review') || id.includes('review')) &&
-                       el.children && el.children.length > 0 &&
-                       !text.match(/^(write|see|read|view)\s+reviews?$/i);
-            });
-        }
+        const seen = new Set();
+        const found = [];
 
-        const seenContent = new Set();
-        const reviews = [];
-
-        reviewElements.forEach(element => {
+        Array.from(review_boxes).forEach(box => {
             const titleSelectors = [
                 '[class*="review-title"]',
                 '[class*="review_title"]',
@@ -458,7 +370,7 @@ async def extract_reviews_traditional(page) -> List[Dict]:
                 '.review-title'
             ].join(',');
 
-            const bodySelectors = [
+            const textSelectors = [
                 '[class*="review-content"]',
                 '[class*="review-body"]',
                 '[class*="review_content"]',
@@ -471,7 +383,7 @@ async def extract_reviews_traditional(page) -> List[Dict]:
                 'p'
             ].join(',');
 
-            const reviewerSelectors = [
+            const userSelectors = [
                 '[class*="review-author"]',
                 '[class*="reviewer-name"]',
                 '[class*="author"]',
@@ -482,11 +394,11 @@ async def extract_reviews_traditional(page) -> List[Dict]:
                 '[class*="ReviewAuthor"]'
             ].join(',');
 
-            const title = cleanText(element.querySelector(titleSelectors)?.textContent);
-            let body = cleanText(element.querySelector(bodySelectors)?.textContent);
+            const title = cleanText(box.querySelector(titleSelectors)?.textContent);
+            let text = cleanText(box.querySelector(textSelectors)?.textContent);
 
-            if (!body) {
-                const clone = element.cloneNode(true);
+            if (!text) {
+                const clone = box.cloneNode(true);
                 const elementsToRemove = [
                     'button', 'input', 'select', 'option',
                     '[class*="more"]', '[class*="truncate"]',
@@ -495,128 +407,157 @@ async def extract_reviews_traditional(page) -> List[Dict]:
                 ].join(',');
                 
                 Array.from(clone.querySelectorAll(elementsToRemove)).forEach(el => el.remove());
-                body = cleanText(clone.textContent);
+                text = cleanText(clone.textContent);
                 
-                if (body.length < 10) {
-                    const mainContent = element.querySelector('[class*="content"], [class*="body"], [class*="text"]');
+                if (text.length < 10) {
+                    const mainContent = box.querySelector('[class*="content"], [class*="body"], [class*="text"]');
                     if (mainContent) {
-                        body = cleanText(mainContent.textContent);
+                        text = cleanText(mainContent.textContent);
                     }
                 }
             }
 
-            const reviewer = cleanText(element.querySelector(reviewerSelectors)?.textContent) || 'Anonymous';
-            const rating = extractRating(element);
+            const user_name = cleanText(box.querySelector(userSelectors)?.textContent) || 'Anonymous';
+            const stars = getStars(box);
 
-            if (isValidReview(body) && !seenContent.has(body)) {
-                seenContent.add(body);
-                reviews.push({
-                    title: title || "Review",
-                    body: body,
-                    rating: rating,
-                    reviewer: reviewer
+            if (isValid(text) && !seen.has(text)) {
+                seen.add(text);
+                found.push({title: title || "Review",
+                    text: text,
+                    stars: stars,
+                    user_name: user_name
                 });
             }
         });
 
-        return reviews;
+        return found;
     }""")
     
     # Clean up and validate reviews
-    cleaned_reviews = []
+    cleaned = []
     for review in reviews:
-        if review['body'] and len(review['body'].split()) >= 3:
-            if review['rating'] is not None:
+        if review['text'] and len(review['text'].split()) >= 3:
+            if review['stars'] is not None:
                 try:
-                    review['rating'] = float(review['rating'])
-                    if not (0 <= review['rating'] <= 5):
-                        review['rating'] = None
+                    review['stars'] = float(review['stars'])
+                    if not (0 <= review['stars'] <= 5):
+                        review['stars'] = None
                 except (ValueError, TypeError):
-                    review['rating'] = None
-            cleaned_reviews.append(review)
+                    review['stars'] = None
+            cleaned.append(review)
     
-    return cleaned_reviews
-async def combine_extraction_methods(page) -> List[Dict]:
-    """Combine traditional and LLM-based extraction methods."""
+    # Get AI selectors
+    html_content = await page.content()
+    
+    # Get AI selectors
+    prompt = f"""Find CSS selectors for reviews in this HTML.
+    Look for:
+    1. Review container selectors
+    2. Review text selectors
+    3. Star rating selectors
+    
+    Return ONLY selectors like this:
+    CONTAINERS: [selector1, selector2]
+    CONTENT: [selector1, selector2]
+    RATINGS: [selector1, selector2]
+    """
+    
+    response = openai.ChatCompletion.create(
+        model="gpt-3.5-turbo",
+        messages=[
+            {"role": "system", "content": "You're an expert at finding CSS selectors for reviews."},
+            {"role": "user", "content": prompt},
+            {"role": "user", "content": html_content[:15000]}
+        ],
+        temperature=0.1
+    )
+    
+    result = response['choices'][0]['message']['content']
+    
+    # Parse selectors
+    containers = []
+    content = []
+    ratings = []
+    
+    current_list = None
+    for line in result.split('\n'):
+        if 'CONTAINERS:' in line:
+            current_list = containers
+            line = line.split('CONTAINERS:')[1]
+        elif 'CONTENT:' in line:
+            current_list = content
+            line = line.split('CONTENT:')[1]
+        elif 'RATINGS:' in line:
+            current_list = ratings
+            line = line.split('RATINGS:')[1]
+            
+        if current_list is not None:
+            selectors = re.findall(r'[\'"]([^\'"]+)[\'"]', line)
+            current_list.extend(selectors)
+
+    # Try AI selectors
+    ai_reviews = await page.evaluate("""(selectors) => {
+        const found = [];
+        const seen = new Set();
+        
+        for (const containerSelector of selectors.containers) {
+            document.querySelectorAll(containerSelector).forEach(box => {
+                for (const contentSelector of selectors.content) {
+                    const textEl = box.querySelector(contentSelector);
+                    if (!textEl) continue;
+                    
+                    const text = (textEl.textContent || '').trim();
+                    if (!text || text.length < 10 || seen.has(text)) continue;
+                    
+                    let stars = null;
+                    for (const ratingSelector of selectors.ratings) {
+                        const ratingEl = box.querySelector(ratingSelector);
+                        if (!ratingEl) continue;
+                        
+                        const match = ratingEl.textContent.match(/([1-5]([.,]\\d)?)/);
+                        if (match) {
+                            stars = parseFloat(match[1]);
+                            break;
+                        }
+                    }
+                    
+                    seen.add(text);
+                    found.push({
+                        title: "Review",
+                        text: text,
+                        stars: stars,
+                        user_name: "Anonymous"
+                    });
+                }
+            });
+        }
+        
+        return found;
+    }""", {"containers": containers, "content": content, "ratings": ratings})
+    
+    # Combine reviews from both methods
+    seen_text = set()
     all_reviews = []
-    seen_content = set()
     
-    # First, try traditional extraction
-    traditional_reviews = await extract_reviews_traditional(page)
-    for review in traditional_reviews:
-        if review['body'] not in seen_content:
-            seen_content.add(review['body'])
+    for review in cleaned:
+        if review['text'] not in seen_text:
+            seen_text.add(review['text'])
+            all_reviews.append(review)
+
+    for review in ai_reviews:
+        if review['text'] not in seen_text:
+            seen_text.add(review['text'])
             all_reviews.append(review)
     
-    # Then try LLM-based extraction
-    try:
-        html_content = await page.content()
-        container_selectors, content_selectors, rating_selectors = await get_dynamic_selectors(html_content)
-        
-        llm_reviews = await page.evaluate("""(selectors) => {
-            function cleanText(text) {
-                if (!text) return '';
-                return text.replace(/\\s+/g, ' ')
-                          .replace(/\\r?\\n/g, ' ')
-                          .trim()
-                          .split(/(?:read more|show more|see more)/i)[0];
-            }
-            
-            function extractRating(element, ratingSelectors) {
-                for (const selector of ratingSelectors) {
-                    const ratingEl = element.querySelector(selector);
-                    if (ratingEl) {
-                        const ratingText = ratingEl.textContent;
-                        const ratingMatch = ratingText.match(/([1-5]([.,]\\d)?)/);
-                        if (ratingMatch) {
-                            return parseFloat(ratingMatch[1]);
-                        }
-                    }
-                }
-                return null;
-            }
-            
-            const reviews = [];
-            
-            for (const containerSelector of selectors.containers) {
-                const containers = document.querySelectorAll(containerSelector);
-                containers.forEach(container => {
-                    let content = null;
-                    
-                    for (const contentSelector of selectors.content) {
-                        const contentEl = container.querySelector(contentSelector);
-                        if (contentEl) {
-                            content = cleanText(contentEl.textContent);
-                            if (content) break;
-                        }
-                    }
-                    
-                    if (content && content.split(/\\s+/).length >= 3) {
-                        const rating = extractRating(container, selectors.ratings);
-                        reviews.push({
-                            title: "Review",
-                            body: content,
-                            rating: rating,
-                            reviewer: "Anonymous"
-                        });
-                    }
-                });
-            }
-            
-            return reviews;
-        }""", {"containers": container_selectors, "content": content_selectors, "ratings": rating_selectors})
-        
-        for review in llm_reviews:
-            if review['body'] not in seen_content:
-                seen_content.add(review['body'])
-                all_reviews.append(review)
-                
-    except Exception as e:
-        logger.error(f"LLM extraction encountered an error: {str(e)}")
-    
     return all_reviews
-async def scrape_reviews(url: str, max_reviews: int = 500) -> Dict:
-    """Main review scraping function."""
+
+from fastapi.responses import FileResponse
+import tempfile
+import json
+
+
+async def scrape_site(url: str, max_count: int = 500) -> Dict:
+    """Main function for scraping reviews."""
     async with async_playwright() as p:
         browser = await p.chromium.launch(headless=True)
         context = await browser.new_context(
@@ -624,91 +565,97 @@ async def scrape_reviews(url: str, max_reviews: int = 500) -> Dict:
             user_agent='Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
         )
         page = await context.new_page()
-        all_reviews = []
+        review_list = []
         successful_pages = 0
         
         try:
-            # Initial page load
             logger.info("Loading page...")
             await page.goto(url, wait_until='domcontentloaded')
             await page.wait_for_timeout(2000)
             
-            page_num = 1
+            curr_page = 1
             
-            while len(all_reviews) < max_reviews and page_num <= 50:
-                logger.info(f"Scraping page {page_num}...")
+            while len(review_list) < max_count and curr_page <= 50:
+                logger.info(f"Scraping page {curr_page}...")
                 
-                # Handle dynamic loading
-                await handle_dynamic_loading(page)
+                await scroll_and_load(page)
                 
-                # Extract reviews using both methods
-                new_reviews = await combine_extraction_methods(page)
+                new_batch = await grab_reviews(page)
                 
-                if new_reviews:
-                    initial_review_count = len(all_reviews)
+                if new_batch:
+                    initial_count = len(review_list)
                     
-                    existing_contents = set(r['body'] for r in all_reviews)
-                    unique_reviews = [r for r in new_reviews if r['body'] not in existing_contents]
-                    all_reviews.extend(unique_reviews)
+                    existing_texts = set(r['text'] for r in review_list)
+                    unique_reviews = [r for r in new_batch if r['text'] not in existing_texts]
                     
-                    if len(all_reviews) > initial_review_count:
+                    # Convert reviews to match required format
+                    formatted_reviews = [{
+                    "title": review["title"],
+                    "text": review["text"],      # Changed from "body" to "text"
+                    "stars": review["stars"],    # Changed from "rating" to "stars"
+                    "user_name": review["user_name"]  # Changed from "reviewer" to "user_name"
+                    } for review in unique_reviews]
+                    
+                    review_list.extend(formatted_reviews)
+                    
+                    if len(review_list) > initial_count:
                         successful_pages += 1
-                        logger.info(f"Found {len(unique_reviews)} new unique reviews on page {page_num}")
+                        logger.info(f"Found {len(unique_reviews)} new unique reviews on page {curr_page}")
                     else:
-                        logger.info("No new unique reviews found. Stopping the scraping process.")
+                        logger.info("No new unique reviews found. Stopping.")
                         break
                 else:
-                    logger.info("No reviews found on current page. Stopping the scraping process.")
+                    logger.info("No reviews found on current page. Stopping.")
                     break
                 
-                # Handle pagination
-                if len(all_reviews) < max_reviews:
-                    has_next = await handle_pagination(page, page_num)
+                if len(review_list) < max_count:
+                    has_next = await handle_pagination(page, curr_page)
                     if not has_next:
                         logger.warning("No more pages available")
                         break
-                    page_num += 1
+                    curr_page += 1
                 else:
                     break
             
-            # Create final result
-            final_result = {
-                "reviews": all_reviews,
-                "reviews_count": len(all_reviews),
-                "pages_with_unique_reviews": successful_pages,
-                "url": url,
-                "scrape_date": time.strftime("%Y-%m-%d %H:%M:%S")
+            result = {
+                "reviews_count": len(review_list),
+                "reviews": review_list
             }
             
-            return final_result
+            return result
             
         finally:
             await context.close()
             await browser.close()
 
-@app.get("/api/reviews", response_model=ReviewResponse)
+@app.get("/api/reviews")
 async def get_reviews(
-    page: str = Query(..., description="URL encoded page URL to scrape reviews from"),
-    max_reviews: int = Query(500, ge=10, le=1000, description="Maximum number of reviews to scrape")
+    page: str = Query(..., description="URL to scrape reviews from"),
+    max_count: int = Query(10000, ge=10, le=100000, description="Maximum number of reviews to scrape"),
+    download: bool = Query(False, description="Download results as JSON file")
 ):
-    """
-    Scrape reviews from a given URL.
-    
-    Parameters:
-    - page: URL encoded page URL to scrape reviews from
-    - max_reviews: Maximum number of reviews to scrape (default: 500, min: 10, max: 1000)
-    
-    Returns:
-    - JSON object containing reviews and metadata
-    """
     try:
-        decoded_url = unquote(page)
-        result = await scrape_reviews(decoded_url, max_reviews)
-        return ReviewResponse(**result)
+        url = unquote(page)
+        logger.info(f"Scraping reviews from: {url}")
+        result = await scrape_site(url, max_count)
+        
+        if download:
+            # Create a temp file for the JSON
+            with tempfile.NamedTemporaryFile(mode='w', delete=False, suffix='.json') as tmp:
+                domain = url.split('/')[2].replace('www.', '')
+                filename = f"{domain}_reviews.json"
+                
+                # Write formatted JSON to temp file
+                json.dump(result, tmp, indent=2, ensure_ascii=False)
+                
+            # Return the file as a download
+            return FileResponse(
+                tmp.name,
+                media_type='application/json',
+                filename=filename
+            )
+        
+        return result
     except Exception as e:
         logger.error(f"Error scraping reviews: {str(e)}")
         raise HTTPException(status_code=500, detail=f"Error scraping reviews: {str(e)}")
-
-if __name__ == "__main__":
-    import uvicorn
-    uvicorn.run("main:app", host="0.0.0.0", port=8000, reload=True)

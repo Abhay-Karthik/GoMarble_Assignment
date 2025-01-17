@@ -1,0 +1,26 @@
+{
+  "name": "gomarble-assignment",
+  "version": "1.0.0",
+  "description": "A web scraper that extracts and analyzes customer reviews from any website",
+  "main": "index.js",
+  "scripts": {
+    "build-css": "tailwindcss -i ./static/css/style.css -o ./static/css/tailwind.css --watch",
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "keywords": [
+    "review-scraper",
+    "web-scraping",
+    "fastapi",
+    "reviews",
+    "gomarble"
+  ],
+  "author": "Abhay Karthik D",
+  "license": "ISC",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/Abhay-Karthik/GoMarble_Assignment"
+  },
+  "dependencies": {
+    "tailwindcss": "^3.x.x"
+  }
+}
