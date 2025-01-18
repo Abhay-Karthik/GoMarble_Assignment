@@ -4,30 +4,66 @@
 
 GoMarble Review Scraper is an advanced web application designed to extract and analyze customer reviews from various websites using AI-powered techniques. Built as an academic project, this tool demonstrates web scraping, AI integration, and full-stack development skills.
 
-✨ Proven Compatibility
+## ✨ Proven Compatibility
+
 The scraper has been successfully tested on multiple websites, demonstrating robust review extraction capabilities:
-Verified Working Websites
 
-2717 Recovery Cream
+### Verified Working Websites
+- [Bhumi](https://bhumi.com.au/)
+  - Successful multi-page review scraping
+  - Detailed review analysis
+  - Consistent data extraction
 
-Comprehensive review extraction
-Accurate review content capture
-Reliable rating information
+### Key Compatibility Features
+- Handles dynamic content loading
+- Extracts reviews from various website structures
+- Works with both single-page and paginated review sections
 
+## 🌐 Key Features
 
-Bhumi
+- 🤖 AI-Enhanced Review Extraction
+- 📊 Comprehensive Review Analysis
+  - Total review count
+  - Pages scraped
+  - Average rating calculation
+- 📥 JSON Export functionality
+- 💻 Responsive, modern UI
+- 🔍 Multi-Website Support
 
-Successful multi-page review scraping
-Detailed review analysis
-Consistent data extraction
+[... rest of the previous README content remains the same ...]
 
+## 🌟 Website Compatibility Notes
 
+### Tips for Best Results
+- Ensure the website has publicly accessible reviews
+- Works best with websites using standard review display methods
+- Recommended for e-commerce, product, and service review pages
 
-Key Compatibility Features
+### Limitations
+- Some websites may have anti-scraping measures
+- Complex JavaScript-heavy sites might require additional configuration
+- Always respect website terms of service
 
-Handles dynamic content loading
-Extracts reviews from various website structures
-Works with both single-page and paginated review sections
+## 🔍 How It Works
+
+The scraper uses advanced techniques to:
+- Navigate through review pages
+- Extract review content intelligently
+- Handle various website structures
+- Apply AI-powered content analysis
+
+### Recommended Websites
+- E-commerce platforms
+- Product review sites
+- Service review pages
+- Consumer goods websites
+
+[... rest of the previous README continues ...]
+# GoMarble Review Scraper
+
+## 🚀 Project Overview
+
+GoMarble Review Scraper is an advanced web application designed to extract and analyze customer reviews from various websites using AI-powered techniques. Built as an academic project, this tool demonstrates web scraping, AI integration, and full-stack development skills.
 
 ## ✨ Key Features
 
@@ -171,7 +207,8 @@ Distributed under the MIT License.
 - Abhay Karthik D
 - Ramaiah Institute of Technology
 
-
 ## 📞 Contact
 
 - Email: abhaykarthik123@gmail.com
+- website: https://abhay-karthik.github.io/website/
+
