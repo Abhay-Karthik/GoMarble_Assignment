@@ -4,6 +4,8 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from fastapi.responses import HTMLResponse
 from fastapi import Request
+from fastapi.responses import FileResponse
+import tempfile
 from fastapi.middleware.cors import CORSMiddleware
 import asyncio
 from urllib.parse import unquote
@@ -550,11 +552,6 @@ async def grab_reviews(page) -> List[Dict]:
             all_reviews.append(review)
     
     return all_reviews
-
-from fastapi.responses import FileResponse
-import tempfile
-import json
-
 
 async def scrape_site(url: str, max_count: int = 500) -> Dict:
     """Main function for scraping reviews."""
