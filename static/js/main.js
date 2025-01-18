@@ -1,11 +1,12 @@
 document.addEventListener('DOMContentLoaded', function() {
     const app = document.getElementById('root');
+    let scrapedData = null; // Store the scraped data
     
     // Initial UI Render
     app.innerHTML = `
         <div class="min-h-screen bg-gradient-to-br from-slate-50 to-slate-100">
             <div class="max-w-6xl mx-auto p-6">
-                <!-- Header -->
+                <!-- Header section remains the same -->
                 <div class="text-center mb-8 pt-8">
                     <h1 class="text-4xl font-bold text-slate-800 mb-2">AI Review Scraper</h1>
                     <p class="text-slate-600 mb-4">Extract and analyze customer reviews from any website</p>
@@ -76,11 +77,31 @@ document.addEventListener('DOMContentLoaded', function() {
     const resultsContainer = document.getElementById('resultsContainer');
     const errorAlert = document.getElementById('errorAlert');
 
+    const downloadScrapedData = () => {
+        if (!scrapedData) return;
+        
+        const blob = new Blob([JSON.stringify(scrapedData, null, 2)], { type: 'application/json' });
+        const url = window.URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        const hostname = new URL(document.getElementById('urlInput').value).hostname.replace('www.', '');
+        a.href = url;
+        a.download = `${hostname}_reviews.json`;
+        document.body.appendChild(a);
+        a.click();
+        window.URL.revokeObjectURL(url);
+        document.body.removeChild(a);
+    };
+
     form.addEventListener('submit', async function(e) {
         e.preventDefault();
         
         const urlInput = document.getElementById('urlInput');
         const url = urlInput.value;
+        
+        // If we already have data for this URL, just show it
+        if (scrapedData && scrapedData.url === url) {
+            return;
+        }
         
         // Show loading state
         submitButton.disabled = true;
@@ -102,48 +123,17 @@ document.addEventListener('DOMContentLoaded', function() {
             }
             
             const data = await response.json();
+            scrapedData = { ...data, url }; // Store the data with the URL
 
-            // Enable download button after successful scrape
+            // Enable download button and add click handler
             downloadButton.disabled = false;
-
-            // Add click handler for download button
-            downloadButton.onclick = async () => {
-                downloadButton.innerHTML = `
-                    <svg class="animate-spin -ml-1 mr-3 h-5 w-5 inline-block" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
-                        <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
-                        <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
-                    </svg>
-                    Downloading...
-                `;
-                
-                try {
-                    const downloadResponse = await fetch(`/api/reviews?page=${encodedUrl}&max_count=10000&download=true`);
-                    if (!downloadResponse.ok) throw new Error('Download failed');
-                    
-                    const blob = await downloadResponse.blob();
-                    const downloadUrl = window.URL.createObjectURL(blob);
-                    const a = document.createElement('a');
-                    a.href = downloadUrl;
-                    a.download = `${new URL(url).hostname.replace('www.', '')}_reviews.json`;
-                    document.body.appendChild(a);
-                    a.click();
-                    window.URL.revokeObjectURL(downloadUrl);
-                    document.body.removeChild(a);
-                    
-                    downloadButton.innerHTML = 'Download JSON';
-                } catch (error) {
-                    downloadButton.innerHTML = 'Download Failed';
-                    setTimeout(() => {
-                        downloadButton.innerHTML = 'Download JSON';
-                    }, 2000);
-                }
-            };
+            downloadButton.onclick = downloadScrapedData;
             
             // Clear previous results
             resultsContainer.innerHTML = '';
             errorAlert.classList.add('hidden');
             
-            // Calculate average stars (with null check)
+            // Calculate average stars
             const reviews = data.reviews || [];
             const reviewsWithStars = reviews.filter(review => review.stars !== null);
             const averageStars = reviewsWithStars.length > 0 
@@ -179,7 +169,7 @@ document.addEventListener('DOMContentLoaded', function() {
                                 </div>
                                 <div>
                                     <p class="text-sm font-medium text-slate-500">Pages Scraped</p>
-                                    <p class="text-2xl font-bold text-slate-800">1</p>
+                                    <p class="text-2xl font-bold text-slate-800">${data.pages_scraped || data.successful_pages || 1}</p>
                                 </div>
                             </div>
                         </div>
@@ -233,7 +223,8 @@ document.addEventListener('DOMContentLoaded', function() {
                                 ${review.title && review.title !== "Review" ? `
                                     <h4 class="font-semibold text-slate-800 mb-2">${review.title}</h4>
                                 ` : ''}
-                                <p class="text-slate-600 leading-relaxed">${review.text || review.body || ''}</p></div>
+                                <p class="text-slate-600 leading-relaxed">${review.text || ''}</p>
+                            </div>
                         </div>
                     `).join('')}
                 </div>
@@ -258,6 +249,16 @@ document.addEventListener('DOMContentLoaded', function() {
         } finally {
             submitButton.disabled = false;
             submitButton.innerHTML = 'Start Scraping';
+        }
+    });
+
+    // Add input change handler to reset state
+    document.getElementById('urlInput').addEventListener('input', function() {
+        if (scrapedData && scrapedData.url !== this.value) {
+            scrapedData = null;
+            downloadButton.disabled = true;
+            resultsContainer.classList.add('hidden');
+            errorAlert.classList.add('hidden');
         }
     });
 });

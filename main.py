@@ -588,20 +588,14 @@ async def scrape_site(url: str, max_count: int = 500) -> Dict:
                     existing_texts = set(r['text'] for r in review_list)
                     unique_reviews = [r for r in new_batch if r['text'] not in existing_texts]
                     
-                    # Convert reviews to match required format
-                    formatted_reviews = [{
-                    "title": review["title"],
-                    "text": review["text"],      # Changed from "body" to "text"
-                    "stars": review["stars"],    # Changed from "rating" to "stars"
-                    "user_name": review["user_name"]  # Changed from "reviewer" to "user_name"
-                    } for review in unique_reviews]
-                    
-                    review_list.extend(formatted_reviews)
-                    
-                    if len(review_list) > initial_count:
+                    # Only increment successful_pages if we found new unique reviews
+                    if unique_reviews:
                         successful_pages += 1
                         logger.info(f"Found {len(unique_reviews)} new unique reviews on page {curr_page}")
-                    else:
+                    
+                    review_list.extend(unique_reviews)
+                    
+                    if len(unique_reviews) == 0:
                         logger.info("No new unique reviews found. Stopping.")
                         break
                 else:
@@ -619,7 +613,10 @@ async def scrape_site(url: str, max_count: int = 500) -> Dict:
             
             result = {
                 "reviews_count": len(review_list),
-                "reviews": review_list
+                "reviews": review_list,
+                "successful_pages": successful_pages,  # Number of pages with unique reviews
+                "url": url,
+                "scrape_date": time.strftime("%Y-%m-%d")
             }
             
             return result
