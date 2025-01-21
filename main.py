@@ -572,7 +572,7 @@ async def scrape_site(url: str, max_count: int = 500) -> Dict:
             
             curr_page = 1
             
-            while len(review_list) < max_count and curr_page <= 50:
+            while len(review_list) < max_count and curr_page <= 500:
                 logger.info(f"Scraping page {curr_page}...")
                 
                 await scroll_and_load(page)
