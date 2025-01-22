@@ -82,7 +82,7 @@ The scraper uses advanced techniques to:
 
 ### 1. Clone the Repository
 ```bash
-git clone [your-repository-url]
+git clone https://github.com/Abhay-Karthik/GoMarble_Assignment
 cd GoMarble_Assignment
 ```
 
